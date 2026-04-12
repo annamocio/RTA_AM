@@ -1,0 +1,140 @@
+# Producent
+
+%%file producer.py
+from kafka import KafkaProducer
+import json, random, time
+from datetime import datetime
+
+producer = KafkaProducer(
+    bootstrap_servers='broker:9092',
+    value_serializer=lambda v: json.dumps(v).encode('utf-8')
+)
+
+def generate_transaction():
+    return {
+        "tx_id": f"TX{random.randint(1000,9999)}",
+        "user_id": f"u{random.randint(1,20):02d}",
+        "amount": round(random.uniform(5.0, 5000.0), 2),
+        "store": random.choice(["Warszawa", "Kraków", "Gdańsk", "Wrocław"]),
+        "category": random.choice(["elektronika", "odzież", "żywność", "książki"]),
+        "timestamp": datetime.now().isoformat()
+    }
+
+while True:
+    tx = generate_transaction()
+    producer.send('transactions', tx)
+    print(tx)
+    time.sleep(1)
+
+
+
+
+##Konsument
+
+from kafka import KafkaConsumer
+import json
+
+consumer = KafkaConsumer(
+    'transactions',
+    bootstrap_servers='broker:9092',
+    group_id='enrich-group',  
+    value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+)
+
+print("Wzbogacanie transakcji o risk_level...")
+
+for message in consumer:
+    tx = message.value
+
+    # dodanie risk_level
+    if tx["amount"] > 3000:
+        tx["risk_level"] = "HIGH"
+    elif tx["amount"] > 1000:
+        tx["risk_level"] = "MEDIUM"
+    else:
+        tx["risk_level"] = "LOW"
+
+    print(tx)
+
+
+
+
+# transakcje per sklep
+from kafka import KafkaConsumer
+from collections import Counter
+import json
+
+consumer = KafkaConsumer(
+    'transactions',
+    bootstrap_servers='broker:9092',
+    value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+)
+
+store_counts = Counter()
+total_amount = {}
+msg_count = 0
+
+print("Zliczanie transakcji per sklep...")
+
+for message in consumer:
+    tx = message.value
+    store = tx["store"]
+    amount = tx["amount"]
+
+    # Zwiększamy licznik
+    store_counts[store] += 1
+    # Dodajemy sumę
+    total_amount[store] = total_amount.get(store, 0) + amount
+
+    msg_count += 1
+
+
+    if msg_count % 10 == 0:
+        print("\n--- Podsumowanie ---")
+        print("Sklep | Liczba | Suma | Średnia")
+        for s in store_counts:
+            liczba = store_counts[s]
+            suma = total_amount[s]
+            srednia = suma / liczba
+            print(f"{s} | {liczba} | {suma:.2f} | {srednia:.2f}")
+
+
+
+# statystyki per kategoria
+from kafka import KafkaConsumer
+from collections import defaultdict
+import json
+
+consumer = KafkaConsumer(
+    'transactions',
+    bootstrap_servers='broker:9092',
+    group_id='stats-group',  # inna grupa, żeby działało równolegle
+    value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+)
+
+stats = defaultdict(lambda: {"count":0, "sum":0, "min":float('inf'), "max":float('-inf')})
+msg_count = 0
+
+print("Śledzenie statystyk per kategoria...")
+
+for message in consumer:
+    tx = message.value
+    category = tx["category"]
+    amount = tx["amount"]
+
+    stats[category]["count"] += 1
+    stats[category]["sum"] += amount
+    stats[category]["min"] = min(stats[category]["min"], amount)
+    stats[category]["max"] = max(stats[category]["max"], amount)
+
+    msg_count += 1
+
+    if msg_count % 10 == 0:
+        print("\n--- Statystyki per kategoria ---")
+        print("Kategoria | Liczba | Suma | Min | Max | Średnia")
+        for cat in stats:
+            s = stats[cat]
+            srednia = s["sum"] / s["count"]
+            print(f"{cat} | {s['count']} | {s['sum']:.2f} | {s['min']:.2f} | {s['max']:.2f} | {srednia:.2f}")
+
+
